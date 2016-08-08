@@ -29,8 +29,7 @@ ML2_SUPPORTED_API_EXTENSIONS_NEUTRON_L3 = [
 ]
 ML2_SUPPORTED_API_EXTENSIONS_OVN_L3 = [
     'router',
-    'extraroute',
-    'vpn_ext_gw',
+    'extraroute'
 ]
 ML2_SUPPORTED_API_EXTENSIONS = [
     'address-scope',
