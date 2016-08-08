@@ -32,14 +32,13 @@ from networking_ovn.common import utils
 from networking_ovn.l3 import l3_ovn_scheduler
 from networking_ovn.ovsdb import impl_idl_ovn
 
-from neutron_vpnaas.db.vpn import vpn_ext_gw_db
 
 LOG = log.getLogger(__name__)
 
 
 class OVNL3RouterPlugin(service_base.ServicePluginBase,
                         common_db_mixin.CommonDbMixin,
-                        vpn_ext_gw_db.VPNExtGW_db_mixin):
+                        extraroute_db.ExtraRoute_dbonly_mixin):
     """Implementation of the OVN L3 Router Service Plugin.
 
     This class implements a L3 service plugin that provides

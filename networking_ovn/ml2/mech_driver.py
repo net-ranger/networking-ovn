@@ -20,6 +20,7 @@ from neutron_lib import constants as const
 from neutron_lib import exceptions as n_exc
 from oslo_config import cfg
 from oslo_log import log
+import six
 
 from neutron.callbacks import events
 from neutron.callbacks import registry
@@ -142,6 +143,10 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                            resources.PROCESS,
                            events.AFTER_INIT)
 
+        registry.subscribe(self._add_segment_host_mapping_for_segment,
+                           resources.SEGMENT,
+                           events.PRECOMMIT_CREATE)
+
         # Handle security group/rule notifications
         if self.sg_enabled:
             registry.subscribe(self._process_sg_notification,
@@ -149,10 +154,10 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                                events.AFTER_CREATE)
             registry.subscribe(self._process_sg_notification,
                                resources.SECURITY_GROUP,
-                               events.BEFORE_DELETE)
-            registry.subscribe(self._process_sg_rule_notification,
-                               resources.SECURITY_GROUP,
                                events.AFTER_UPDATE)
+            registry.subscribe(self._process_sg_notification,
+                               resources.SECURITY_GROUP,
+                               events.BEFORE_DELETE)
             registry.subscribe(self._process_sg_rule_notification,
                                resources.SECURITY_GROUP_RULE,
                                events.AFTER_CREATE)
@@ -194,6 +199,10 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                     txn.add(self._nb_ovn.create_address_set(
                             name=utils.ovn_addrset_name(sg['id'], ip_version),
                             external_ids=external_ids))
+                elif event == events.AFTER_UPDATE:
+                    txn.add(self._nb_ovn.update_address_set_ext_ids(
+                            name=utils.ovn_addrset_name(sg['id'], ip_version),
+                            external_ids=external_ids))
                 elif event == events.BEFORE_DELETE:
                     txn.add(self._nb_ovn.delete_address_set(
                             name=utils.ovn_addrset_name(sg['id'], ip_version)))
@@ -205,17 +214,14 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
         is_add_acl = True
 
         admin_context = n_context.get_admin_context()
-        if resource == resources.SECURITY_GROUP:
-            sg_id = kwargs.get('security_group_id')
-        elif resource == resources.SECURITY_GROUP_RULE:
-            if event == events.AFTER_CREATE:
-                sg_rule = kwargs.get('security_group_rule')
-                sg_id = sg_rule['security_group_id']
-            elif event == events.BEFORE_DELETE:
-                sg_rule = self._plugin.get_security_group_rule(
-                    admin_context, kwargs.get('security_group_rule_id'))
-                sg_id = sg_rule['security_group_id']
-                is_add_acl = False
+        if event == events.AFTER_CREATE:
+            sg_rule = kwargs.get('security_group_rule')
+            sg_id = sg_rule['security_group_id']
+        elif event == events.BEFORE_DELETE:
+            sg_rule = self._plugin.get_security_group_rule(
+                admin_context, kwargs.get('security_group_rule_id'))
+            sg_id = sg_rule['security_group_id']
+            is_add_acl = False
 
         # TODO(russellb) It's possible for Neutron and OVN to get out of sync
         # here. If updating ACls fails somehow, we're out of sync until another
@@ -224,7 +230,7 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
                                                admin_context,
                                                self._nb_ovn,
                                                sg_id,
-                                               rule=sg_rule,
+                                               sg_rule,
                                                is_add_acl=is_add_acl)
 
     def create_network_precommit(self, context):
@@ -618,13 +624,17 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
             sg_ids = port.get('security_groups', [])
             if port.get('fixed_ips') and sg_ids:
                 addresses = ovn_acl.acl_port_ips(port)
+                # NOTE(rtheis): Fail port creation if the address set doesn't
+                # exist. This prevents ports from being created on any security
+                # groups out-of-sync between neutron and OVN.
                 for sg_id in sg_ids:
                     for ip_version in addresses:
                         if addresses[ip_version]:
                             txn.add(self._nb_ovn.update_address_set(
                                 name=utils.ovn_addrset_name(sg_id, ip_version),
                                 addrs_add=addresses[ip_version],
-                                addrs_remove=None))
+                                addrs_remove=None,
+                                if_exists=False))
 
     def update_port_precommit(self, context):
         """Update resources of a port.
@@ -949,3 +959,14 @@ class OVNMechanismDriver(driver_api.MechanismDriver):
 
         segment_service_db.update_segment_host_mapping(
             ctx, host, available_seg_ids)
+
+    def _add_segment_host_mapping_for_segment(self, resource, event, trigger,
+                                              context, segment):
+        phynet = segment.physical_network
+        if not phynet:
+            return
+
+        host_phynets_map = self._sb_ovn.get_chassis_hostname_and_physnets()
+        hosts = {host for host, phynets in six.iteritems(host_phynets_map)
+                 if phynet in phynets}
+        segment_service_db.map_segment_to_hosts(context, segment.id, hosts)

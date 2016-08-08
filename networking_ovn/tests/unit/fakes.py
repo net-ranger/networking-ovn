@@ -47,6 +47,7 @@ class FakeOvsdbNbOvnIdl(object):
         self.add_static_route = mock.Mock()
         self.delete_static_route = mock.Mock()
         self.create_address_set = mock.Mock()
+        self.update_address_set_ext_ids = mock.Mock()
         self.delete_address_set = mock.Mock()
         self.update_address_set = mock.Mock()
         self.get_all_chassis_router_bindings = mock.Mock()
@@ -64,6 +65,7 @@ class FakeOvsdbSbOvnIdl(object):
 
     def __init__(self, **kwargs):
         self.get_chassis_hostname_and_physnets = mock.Mock()
+        self.get_chassis_hostname_and_physnets.return_value = {}
         self.get_all_chassis = mock.Mock()
 
 

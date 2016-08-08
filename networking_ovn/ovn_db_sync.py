@@ -23,6 +23,7 @@ from neutron import context
 from neutron.extensions import providernet as pnet
 from neutron import manager
 from neutron.plugins.common import constants as service_constants
+from neutron.services.segments import db as segments_db
 
 from networking_ovn._i18n import _LW
 from networking_ovn.common import acl as acl_utils
@@ -90,6 +91,13 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         self.ovn_driver.create_network_in_ovn(net, {}, physnet, segid)
 
     def _create_port_in_ovn(self, ctx, port):
+        # Remove any old ACLs for the port to avoid creating duplicate ACLs.
+        self.ovn_api.delete_acl(
+            utils.ovn_name(port['network_id']),
+            port['id']).execute(check_error=True)
+
+        # Create the port in OVN. This will include ACL and Address Set
+        # updates as needed.
         ovn_port_info = self.ovn_driver.get_ovn_port_options(port)
         self.ovn_driver.create_port_in_ovn(port, ovn_port_info)
 
@@ -315,9 +323,9 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                             if_exists=False))
             for sroute in update_sroutes_list:
                 if sroute['add']:
-                    LOG.warning("Router %s static routes %s found in "
-                                "Neutron but not in OVN", sroute['id'],
-                                sroute['add'])
+                    LOG.warning(_LW("Router %(id)s static routes %(route)s "
+                                    "found in Neutron but not in OVN"),
+                                {'id': sroute['id'], 'route': sroute['add']})
                     if self.mode == SYNC_MODE_REPAIR:
                         LOG.warning(_LW("Add static routes %s to OVN NB DB"),
                                     sroute['add'])
@@ -327,9 +335,9 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
                                 ip_prefix=route['destination'],
                                 nexthop=route['nexthop']))
                 if sroute['del']:
-                    LOG.warning("Router %s static routes %s found in "
-                                "OVN but not in Neutron", sroute['id'],
-                                sroute['del'])
+                    LOG.warning(_LW("Router %(id)s static routes %(route)s "
+                                    "found in OVN but not in Neutron"),
+                                {'id': sroute['id'], 'route': sroute['del']})
                     if self.mode == SYNC_MODE_REPAIR:
                         LOG.warning(_LW("Delete static routes %s from OVN "
                                         "NB DB"), sroute['del'])
@@ -439,9 +447,28 @@ class OvnSbSynchronizer(OvnDbSynchronizer):
     def sync_hostname_and_physical_networks(self, ctx):
         LOG.debug('OVN-SB Sync hostname and physical networks started')
         host_phynets_map = self.ovn_api.get_chassis_hostname_and_physnets()
-        # TODO(xiaohhui): There is no function in neutron to check the existing
-        # SegmentHostMapping. So update to neutron will always be triggered.
-        # Neutron will update the DB if necessary.
-        for host, phynets in six.iteritems(host_phynets_map):
-            self.ovn_driver.update_segment_host_mapping(host, phynets)
+        current_hosts = set(host_phynets_map)
+        previous_hosts = segments_db.get_hosts_mapped_with_segments(ctx)
+
+        stale_hosts = previous_hosts - current_hosts
+        for host in stale_hosts:
+            LOG.debug('Stale host %s found in Neutron, but not in OVN SB DB. '
+                      'Clear its SegmentHostMapping in Neutron', host)
+            self.ovn_driver.update_segment_host_mapping(host, [])
+
+        new_hosts = current_hosts - previous_hosts
+        for host in new_hosts:
+            LOG.debug('New host %s found in OVN SB DB, but not in Neutron. '
+                      'Add its SegmentHostMapping in Neutron', host)
+            self.ovn_driver.update_segment_host_mapping(
+                host, host_phynets_map[host])
+
+        for host in current_hosts & previous_hosts:
+            LOG.debug('Host %s found both in OVN SB DB and Neutron. '
+                      'Trigger updating its SegmentHostMapping in Neutron, '
+                      'to keep OVN SB DB and Neutron have consistent data',
+                      host)
+            self.ovn_driver.update_segment_host_mapping(
+                host, host_phynets_map[host])
+
         LOG.debug('OVN-SB Sync hostname and physical networks finished')

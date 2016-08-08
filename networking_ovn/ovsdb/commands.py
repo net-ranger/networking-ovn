@@ -678,12 +678,40 @@ class UpdateAddrSetCommand(BaseCommand):
         addrset.verify('addresses')
         addresses_col = getattr(addrset, 'addresses', [])
         if self.addrs_add:
+            # OVN will ignore duplicate addresses.
             for addr_add in self.addrs_add:
                 addresses_col.append(addr_add)
         if self.addrs_remove:
+            # OVN will ignore addresses that don't exist.
             for addr_remove in self.addrs_remove:
-                addresses_col.remove(addr_remove)
+                if addr_remove in addresses_col:
+                    addresses_col.remove(addr_remove)
         setattr(addrset, 'addresses', addresses_col)
+
+
+class UpdateAddrSetExtIdsCommand(BaseCommand):
+    def __init__(self, api, name, external_ids, if_exists):
+        super(UpdateAddrSetExtIdsCommand, self).__init__(api)
+        self.name = name
+        self.external_ids = external_ids
+        self.if_exists = if_exists
+
+    def run_idl(self, txn):
+        try:
+            addrset = idlutils.row_by_value(self.api.idl, 'Address_Set',
+                                            'name', self.name)
+        except idlutils.RowNotFound:
+            if self.if_exists:
+                return
+            msg = _("Address set %s does not exist. "
+                    "Can't update external IDs") % self.name
+            raise RuntimeError(msg)
+
+        addrset.verify('external_ids')
+        addrset_external_ids = getattr(addrset, 'external_ids', {})
+        for ext_id_key, ext_id_value in six.iteritems(self.external_ids):
+            addrset_external_ids[ext_id_key] = ext_id_value
+        addrset.external_ids = addrset_external_ids
 
 
 class DHCPOptionsCommand(BaseCommand):
